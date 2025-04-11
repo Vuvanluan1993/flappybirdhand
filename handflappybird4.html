@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Flappy Bird điều khiển bằng tay</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      justify-content: center;
+    }
+    canvas {
+      margin: 5px;
+      border: 1px solid #ccc;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="cameraCanvas" width="320" height="240"></canvas>
+  <canvas id="gameCanvas" width="320" height="240"></canvas>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+
+  <script>
+    const cameraCanvas = document.getElementById('cameraCanvas');
+    const cameraCtx = cameraCanvas.getContext('2d');
+    const gameCanvas = document.getElementById('gameCanvas');
+    const gameCtx = gameCanvas.getContext('2d');
+
+    let video;
+    let detector;
+    let lastState = null;
+    let lastChange = Date.now();
+    const COOLDOWN = 300;
+
+    let gameStarted = false;
+    let gameOver = false;
+    let resetState = "idle";
+    let jumpRequested = false;
+
+    let birdY = 120, birdV = 0;
+    let pipes = [];
+    let score = 0;
+
+    function drawGame() {
+      gameCtx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+
+      // Draw bird
+      gameCtx.beginPath();
+      gameCtx.arc(60, birdY, 10, 0, 2 * Math.PI);
+      gameCtx.fillStyle = 'yellow';
+      gameCtx.fill();
+
+      // Draw pipes
+      pipes.forEach(pipe => {
+        gameCtx.fillStyle = 'green';
+        gameCtx.fillRect(pipe.x, 0, 40, pipe.top);
+        gameCtx.fillRect(pipe.x, pipe.top + 100, 40, 240);
+      });
+
+      // Draw score
+      gameCtx.fillStyle = 'black';
+      gameCtx.font = '16px Arial';
+      gameCtx.fillText('Score: ' + score, 10, 20);
+
+if (!gameStarted) {
+  gameCtx.fillStyle = 'blue';
+  gameCtx.font = '14px Arial';
+  gameCtx.fillText('Hướng dẫn chơi:', 90, 60);
+  gameCtx.fillText('- Nắm tay để bắt đầu game.', 60, 80);
+  gameCtx.fillText('- Nắm tay để điều khiển Flappy Bird bay lên.', 10, 100);
+  gameCtx.fillText('- Tránh các ống xanh để ghi điểm.', 30, 120);
+}
+
+      if (gameOver) {
+        gameCtx.fillStyle = 'red';
+        gameCtx.font = '16px Arial';
+        gameCtx.fillText('Game Over!', 100, 100);
+        gameCtx.fillText('Nắm tay rồi xòe tay để chơi lại', 30, 130);
+      }
+    }
+
+    function gameLoop() {
+      if (!gameStarted || gameOver) {
+        drawGame();
+        requestAnimationFrame(gameLoop);
+        return;
+      }
+
+      // Bird physics
+      birdV += 0.2; // gravity nhẹ hơn
+      birdY += birdV;
+      if (jumpRequested) {
+        birdV = -4.6; // nhảy mạnh hơn
+        jumpRequested = false;
+      }
+
+      // Update pipes
+      pipes.forEach(pipe => pipe.x -= 2);
+      if (pipes.length === 0 || pipes[pipes.length - 1].x < 160) {
+        const top = Math.random() * 100 + 30;
+        pipes.push({ x: 320, top, passed: false });
+      }
+      if (pipes[0].x < -40) pipes.shift();
+
+      // Collision and scoring
+      for (let pipe of pipes) {
+        if (60 > pipe.x && 60 < pipe.x + 40) {
+          if (birdY < pipe.top || birdY > pipe.top + 100) {
+            gameOver = true;
+          }
+        }
+        if (!pipe.passed && pipe.x + 40 < 60) {
+          score++;
+          pipe.passed = true;
+        }
+      }
+
+      if (birdY > 240 || birdY < 0) gameOver = true;
+
+      drawGame();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function restartGame() {
+      birdY = 120;
+      birdV = 0;
+      pipes = [];
+      score = 0;
+      gameOver = false;
+      gameStarted = true;
+      resetState = "idle";
+    }
+
+    async function initCamera() {
+      video = document.createElement('video');
+      video.width = 320;
+      video.height = 240;
+      video.autoplay = true;
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+      await video.play();
+    }
+
+    function getHandState(landmarks) {
+      const palm = landmarks[0];
+      const fingerTips = [8, 12, 16, 20];
+      let extendedFingers = 0;
+
+      fingerTips.forEach(i => {
+        const tip = landmarks[i];
+        const dx = tip.x - palm.x;
+        const dy = tip.y - palm.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance > 60) extendedFingers++;
+      });
+
+      return extendedFingers >= 3 ? "open" : "closed";
+    }
+
+    async function detect() {
+      const hands = await detector.estimateHands(video, { flipHorizontal: true });
+      cameraCtx.clearRect(0, 0, cameraCanvas.width, cameraCanvas.height);
+      cameraCtx.drawImage(video, 0, 0, cameraCanvas.width, cameraCanvas.height);
+
+      const now = Date.now();
+      if (hands.length > 0) {
+        const hand = hands[0];
+        const points = hand.keypoints;
+
+        const scaleX = cameraCanvas.width / video.videoWidth;
+        const scaleY = cameraCanvas.height / video.videoHeight;
+
+        points.forEach(pt => {
+          const x = pt.x * scaleX;
+          const y = pt.y * scaleY;
+          cameraCtx.beginPath();
+          cameraCtx.arc(x, y, 4, 0, 2 * Math.PI);
+          cameraCtx.fillStyle = 'lime';
+          cameraCtx.fill();
+        });
+
+        const handState = getHandState(points);
+        cameraCtx.fillStyle = "blue";
+        cameraCtx.font = "18px Arial";
+        cameraCtx.fillText("Tay: " + (handState === "closed" ? "Nắm" : "Xòe"), 10, 20);
+
+        const isClosed = handState === "closed";
+        const changedState = isClosed !== lastState && (now - lastChange > COOLDOWN);
+
+        if (lastState === null || changedState) {
+          lastState = isClosed;
+          lastChange = now;
+
+          if (!gameStarted && isClosed) {
+            gameStarted = true;
+            gameLoop();
+          } else if (gameStarted && !gameOver && isClosed) {
+            jumpRequested = true;
+          }
+
+          if (gameOver) {
+            if (resetState === "idle" && isClosed) {
+              resetState = "fist";
+            } else if (resetState === "fist" && !isClosed) {
+              resetState = "done";
+              restartGame();
+            }
+          }
+        }
+      }
+
+      requestAnimationFrame(detect);
+    }
+
+    async function main() {
+      await initCamera();
+      detector = await handPoseDetection.createDetector(
+        handPoseDetection.SupportedModels.MediaPipeHands,
+        {
+          runtime: 'mediapipe',
+          modelType: 'lite',
+          solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/hands'
+        }
+      );
+      detect();
+      drawGame();
+    }
+
+    main();
+  </script>
+</body>
+</html>
